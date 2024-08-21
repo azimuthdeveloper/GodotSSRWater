@@ -1,8 +1,6 @@
 shader_type spatial;
 render_mode cull_disabled;
 
-const float EPSILON = 1e-5;
-
 uniform sampler2D SCREEN_TEXTURE : hint_screen_texture, filter_nearest;
 uniform sampler2D DEPTH_TEXTURE : hint_depth_texture, filter_nearest;
 
@@ -21,7 +19,6 @@ uniform float ssr_resolution   : hint_range(0.01, 10.0, 0.1)	= 2.0;
 uniform float ssr_max_travel   : hint_range(0.0, 200.0, 0.1) 	= 30.0;
 uniform float ssr_max_diff     : hint_range(0.1, 10.0, 0.1) 	= 4.0;
 uniform float ssr_mix_strength : hint_range(0.0, 1.0, 0.01) 	= 0.7;
-uniform float ssr_screen_border_fadeout: hint_range(0.0, 1.0, 0.1)	= 0.3;
 
 uniform float wave_noise_scale = 15.0;
 uniform float wave_height_scale = 0.4;
@@ -87,31 +84,7 @@ vec3 get_view_position_from_uv(vec2 uv, float depth, mat4 inv_proj_m)
 	return view_position.xyz /= view_position.w;
 }
 
-bool is_zero(float value) {
-    return abs(value) < EPSILON;
-}
-
-float get_screen_border_alpha(vec2 screen_position)
-{
-
-	if (is_zero(ssr_screen_border_fadeout)) {
-		return 1.0;
-	}
-
-    vec2 shifted_screen_position = 4.0 * screen_position * (1.0 - screen_position);
-	float mask = shifted_screen_position.x * shifted_screen_position.y; // ranging from 0.0 at the edges to 1.0 in the center 
-
-	// An offset in the [0.0, 0.5] range for ssr_screen_border_fadeout values > 0.75
-	// which is subtracted from the result of smoothstep.
-	// This ensure alpha smoothly transitions to zero when ssr_screen_border_fadeout is approaching 1.0.	
-	float offset = mix(0.0, 0.5, (clamp(ssr_screen_border_fadeout, 0.75, 1.0)-0.75) / 0.25);
- 
-	float alpha = clamp(smoothstep(0.0, 2.0 * ssr_screen_border_fadeout, mask) - offset, 0.0, 1.0);
-
-	return alpha;
-}
-
-vec4 get_ssr_color(vec3 surface_view_position, vec3 normal_view_space, vec3 view_view_space, mat4 proj_m, mat4 inv_proj_m)
+vec3 get_ssr_color(vec3 surface_view_position, vec3 normal_view_space, vec3 view_view_space, mat4 proj_m, mat4 inv_proj_m)
 {
 	vec3 current_position_view_space = surface_view_position;
 	vec3 view_direction_view_space = view_view_space * -1.0;
@@ -132,9 +105,7 @@ vec4 get_ssr_color(vec3 surface_view_position, vec3 normal_view_space, vec3 view
 		
 		resulting_color = (is_within_screen_boundaries(current_screen_position) && depth_diff >= 0.0 && depth_diff < ssr_max_diff) ? texture(SCREEN_TEXTURE, current_screen_position.xy).rgb : vec3(-1.0);
 	}
-
-	float alpha = get_screen_border_alpha(current_screen_position);
-	return vec4(resulting_color,alpha);
+	return resulting_color;
 }
 
 float linear_depth(float cur_depth)
@@ -162,11 +133,12 @@ void fragment() {
 	
 	vec2 refraction_uv = refraction_intensity > 0.0 ? get_refracted_uv(SCREEN_UV, screen_depth_raw, VIEW, NORMAL, PROJECTION_MATRIX, INV_PROJECTION_MATRIX) : SCREEN_UV;
 	
-	float screen_depth = texture(DEPTH_TEXTURE, refraction_uv).x;
+	float screen_depth = 1.0 - texture(DEPTH_TEXTURE, refraction_uv).x;
 	float surface_depth = FRAGCOORD.z;
 	
-	float border_diff = linear_depth(screen_depth_raw) - linear_depth(surface_depth);
-	
+	//float border_diff = linear_depth(screen_depth_raw) - linear_depth(surface_depth);
+	float border_diff = linear_depth(1.0 - screen_depth_raw) - linear_depth(1.0 - surface_depth);  // Adjust depth values for Reverse Z
+
 	vec2 time_vector = (TIME * surface_normals_move_direction_a) * surface_texture_time_scale;
 	vec2 time_vector2 = (TIME * surface_normals_move_direction_b) * surface_texture_time_scale;
 	
@@ -179,10 +151,10 @@ void fragment() {
 	
 	vec3 screen_color 				= texture(SCREEN_TEXTURE, refraction_uv).rgb;
 	vec3 surface_color 				= albedo;
-	vec4 ssr_color 					= get_ssr_color(surface_view_position, NORMAL, VIEW, PROJECTION_MATRIX, INV_PROJECTION_MATRIX);
+	vec3 ssr_color 					= get_ssr_color(surface_view_position, NORMAL, VIEW, PROJECTION_MATRIX, INV_PROJECTION_MATRIX);
 	vec3 color_with_transparency 	= mix(surface_color, screen_color, transparency);
 	vec3 depth_color 				= mix(color_deep.rgb, color_with_transparency, depth_opacity);
-	vec3 water_color 				= (ssr_color.x >= 0.0) ? mix(depth_color, ssr_color.rgb, ssr_mix_strength * ssr_color.a) : depth_color;
+	vec3 water_color 				= (ssr_color.x >= 0.0) ? mix(depth_color, ssr_color, ssr_mix_strength) : depth_color;
 	vec3 final_color				= mix(border_color, water_color, step(border_scale, border_diff));
 	
 	ALBEDO.rgb = final_color;
